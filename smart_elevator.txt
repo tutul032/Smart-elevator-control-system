@@ -1,0 +1,215 @@
+
+import RPi.GPIO as GPIO
+import time
+from datetime import datetime
+from pymodbus.client.sync import ModbusSerialClient as ModbusClient
+import paho.mqtt.client as mqtt
+import json
+from prettytable import PrettyTable
+from threading import Timer
+import ssl
+
+iot_hub = 'demo.thingsboard.io'
+port = 1883
+username = 'tUonoVRCvVY4DB5ELY5k'
+password = ''
+topic = 'v1/devices/me/telemetry'
+data = dict()
+
+
+data_table = PrettyTable(['Date and Time', 'Floor Number', 'Floor Count' ,'Door_open_count', 'Moving Direction', 'Direction_change', 'operating_hour', 'Motor operating time'])
+
+#counter for door open/close
+count_Door = 0
+#counter for up/down moving 
+count_directiondown = 0
+count_directionup = 0
+floor_number = 0
+Direction = 0
+
+L0 = [0, 0]
+C = -1
+time_motor_s = 0
+time_motor_m = 0
+time_motor_h = 0
+
+
+GPIO.setmode(GPIO.BOARD)
+
+GPIO.setup(18, GPIO.IN, pull_up_down = GPIO.PUD_DOWN)
+GPIO.setup(16, GPIO.IN, pull_up_down = GPIO.PUD_DOWN)
+GPIO.setup(22, GPIO.IN, pull_up_down = GPIO.PUD_DOWN)
+GPIO.setup(36, GPIO.IN, pull_up_down = GPIO.PUD_DOWN)
+
+GPIO.setup(11, GPIO.IN, pull_up_down = GPIO.PUD_DOWN)
+GPIO.setup(13, GPIO.IN, pull_up_down = GPIO.PUD_DOWN)
+GPIO.setup(15, GPIO.IN, pull_up_down = GPIO.PUD_DOWN)
+GPIO.setup(37, GPIO.IN, pull_up_down = GPIO.PUD_DOWN)
+		
+
+#function for each floor detection and floor counting, fault detection, direction change counting, operating hour counting, door open close counting, moving direction detection. 		
+def fault(channel):
+	if GPIO.input(11) == 0:
+		time.sleep(.2)
+		print 'Fault'
+		data['Current condition'] = 'FAULT'
+	else: 
+		print 'Normal'
+		data['Current condition'] = 'Normal'
+def door(channel):
+	time.sleep(.25)
+	if GPIO.input(37) == 1:
+		global count_Door
+		print 'Door open'
+		data['Door Position:'] = 'Open'
+		
+		count_Door = count_Door + 1
+		print 'Total number of Door open:', count_Door
+		data['Door Open count:'] = count_Door
+	else:
+		print 'Door close'
+		data['Door Position:'] = 'Close'
+def move(channel):
+	if GPIO.input(15) == 1:
+		
+		global time_motor
+		global count_directionup
+		global L0
+		global C
+		global Direction 
+		L1 = [1, 0]
+		Direction = 'Upwards'
+		print Direction
+		
+		
+		data['Moving Direction:'] = Direction
+		#count_directionup = count_directionup + 1
+		#print 'Total number of travel in upward direction:', count_directionup
+		#data['Total upward moving number:'] = count_directionup
+		if L1 != L0:
+			C = C + 1
+			L0 = L1
+			print 'Direction change', C
+			data['Direction change'] = C
+		
+def move1(channel):		
+	if GPIO.input(13) == 1:
+		
+		global count_directiondown
+		global L0
+		global C
+		global Direction 
+		
+		L2 = [0, 1]
+		Direction = 'Downwards'
+		print Direction
+		data['Moving Direction:'] = Direction
+		#count_directiondown = count_directiondown + 1
+		#print 'Total number of travel in Downword direction:', count_directiondown
+		#data['Total Downward moving number:'] = count_directiondown
+		if L2 != L0:
+			C = C + 1
+			L0 = L2
+			print 'Direction change', C
+			data['Direction change'] = C
+			
+global s	
+start_time = datetime.now()
+s = 0
+
+'''
+pin 16, 18, 22, 36 used for floor detection and counting pin 11 used to detect current condition
+pin 15 and 13 used for the detection of moving direction and pin 37 used for the door position detection
+'''
+
+GPIO.add_event_detect ( 37, GPIO.BOTH , callback = door, bouncetime = 300)
+
+GPIO.add_event_detect ( 15, GPIO.RISING , callback = move, bouncetime = 300)
+
+GPIO.add_event_detect ( 13, GPIO.RISING , callback = move1, bouncetime = 300)
+
+GPIO.add_event_detect ( 11, GPIO.BOTH , callback = fault, bouncetime = 300)
+
+mydict = {0:0,1:0,2:0,3:0,4:0,5:0,6:0,7:0,8:0}
+floorbefore = 0
+
+while True:
+	
+	floor = 0
+	if(GPIO.input(16) ==1):
+	
+		floor = 1
+		
+	if(GPIO.input(18) == 1):
+		floor = floor + 2
+		
+	if(GPIO.input(22) == 1):
+		floor = floor + 2*2
+		
+	if(GPIO.input(36) == 1):
+		floor = floor + 2*2*2
+		
+	if(floor != floorbefore):
+		mydict[floor] = mydict[floor] + 1
+		
+		print 'floor ' ,floor , 'count', mydict[floor]
+		data['Floor number:'] = floor
+		data['Floor count'] = mydict[floor]
+		floorbefore = floor	
+		data['Motor operating time'] = s
+		
+		data_table.add_row([dt_string, floor, mydict[floor], count_Door,Direction, C, t, s])
+	
+		mystring = data_table.get_string()
+	
+		#print mystring
+
+		f= open("testfile2.txt","w")
+		f.write(mystring)
+		f.close() 
+		
+		
+			
+	now = datetime.now()
+	dt_string = now.strftime("%d-%m-%Y / %H:%M:%S")
+	data['Date and Time'] = dt_string
+	
+	time_elapsed = datetime.now() - start_time
+	t = str(time_elapsed)[:7]
+	#print 'Time elapsed ', t
+	data['Operating Time'] = t
+	
+	if GPIO.input(15) == 1 or GPIO.input(13) == 1:
+		
+		time_motor_s = time_motor_s + 1
+		
+		if time_motor_s == 59:
+			time_motor_s = 0
+			time_motor_m = time_motor_m + 1
+			
+		if time_motor_m == 59:
+			time_motor_m = 0
+			time_motor_h = time_motor_h + 1
+		
+		
+		s = str(time_motor_h) + ':' + str(time_motor_m) + ':' + str(time_motor_s)
+		
+		
+		
+		#print 'Time', s
+	
+	# Floor number and count
+	clnt = mqtt.Client()
+    	clnt.username_pw_set(username , password)
+    
+    	clnt.tls_set(ca_certs=None, certfile=None, keyfile=None, cert_reqs=ssl.CERT_REQUIRED,tls_version=ssl.PROTOCOL_TLS, ciphers=None)
+    	clnt.connect(iot_hub,port,keepalive=60)
+    	print 'Connection successful'
+    	data_out = json.dumps(data)
+
+    	clnt.publish(topic,data_out,0)
+
+	time.sleep(1)
+
+	
+GPIO.cleanup()
